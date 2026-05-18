@@ -1,0 +1,28 @@
+{
+  "name": "apex-shadow",
+  "author": "Ahmed Hussein",
+  "version": "1.0.0",
+  "keywords": ["pebble-app"],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "Apex Shadow",
+    "uuid": "5a2c0c8e-1e6b-4d2a-9e6c-1d3f7a2b9c41",
+    "sdkVersion": "3",
+    "enableMultiJS": false,
+    "watchapp": {
+      "watchface": true
+    },
+    "messageKeys": [],
+    "resources": {
+      "media": []
+    },
+    "targetPlatforms": [
+      "aplite",
+      "basalt",
+      "chalk",
+      "diorite"
+    ],
+    "capabilities": []
+  }
+}

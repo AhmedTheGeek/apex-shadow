@@ -152,7 +152,7 @@ This is a watchface, not a UI. The "components" are visual primitives drawn dire
 - **Type:** Apex Display at locked scale 3x rendering `HH:MM` (or `H:MM` per 12/24-hour preference).
 - **Rotation:** baseline parallel to the wedge axis. If the wedge points to 4 o'clock, the digits read at 4-o'clock-tilt.
 - **Locked scale:** scale 3x is the largest that fits inside the wedge at every hour, across every Pebble platform. The scale never varies with angle — the digits read at the same on-screen pixel size at 12:00, 3:00, 7:35, and every angle in between. Scale 4x cannot fit at cardinal angles on the 144×168 screens even at maximum camera pull, so it is never reached.
-- **Locked position:** the digit center sits 20px from the screen center along the shadow axis at every hour — approximately the midpoint of the visible wedge. Combined with a fixed 32px camera pull, this places the digit at the same on-screen offset regardless of where the wedge points. No jitter.
+- **Locked position:** the digit center sits 22px from the screen center along the shadow axis at every hour. Combined with a fixed 44px camera pull (so reveal_radius = 66 from the dial center), this places the digit at the same on-screen offset regardless of where the wedge points, and keeps a ~27px gap between the gnomon tip and the digit's near edge so the gnomon, wedge apex, lip, and wall all read clearly before the digits begin.
 - **Body:** mid-stipple, intensity 150 with stipple noise.
 - **Rim:** intensity 255 on the edge facing the under-face light (toward the gnomon).
 - **Trailing edge:** intensity ~78 with stipple noise.

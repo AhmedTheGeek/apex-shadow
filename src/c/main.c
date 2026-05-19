@@ -53,16 +53,17 @@ static int     s_minute = 0;
 // Why scale 3: scale 4 cannot fit inside the wedge at cardinal angles on a
 // 144x168 screen, even at maximum camera pull. Scale 3 fits everywhere.
 //
-// Why this camera_pull / reveal_radius: with scale 3, the wedge needs to be
-// at least 52px from the dial center for the rotated glyph block to clear
-// the wedge edges (9*3+5 height / tan(33°) ≈ 49, plus 3px safety). We place
-// the digit center 20px ahead of screen center along the shadow axis (≈ the
-// midpoint of the visible wedge at cardinal angles), which fixes the
-// camera_pull at 52 − 20 = 32. Same at every hour.
+// Why this camera_pull / reveal_radius: with scale 3, the rotated HH:MM block
+// is 78px wide, so its near edge sits text_half_w = 39px from the digit
+// center. Reveal radius − 39 is the visible gap between the gnomon tip and
+// the digit's near edge. We size that gap at ~27px so the gnomon, wedge
+// apex, lip, and wall all read clearly before the digits begin: reveal 66,
+// digit center 22px ahead of screen_center, camera pull 44. Same at every
+// hour, fits on 144x168 at cardinal angles with margin.
 #define LOCKED_TIME_SCALE        3
-#define LOCKED_DIGIT_OFFSET     20    // digit center distance from screen_center along shadow axis
-#define LOCKED_REVEAL           52    // distance from dial center to digit center along shadow axis
-#define LOCKED_CAMERA_PULL      32    // = LOCKED_REVEAL - LOCKED_DIGIT_OFFSET
+#define LOCKED_DIGIT_OFFSET     22    // digit center distance from screen_center along shadow axis
+#define LOCKED_REVEAL           66    // distance from dial center to digit center along shadow axis
+#define LOCKED_CAMERA_PULL      44    // = LOCKED_REVEAL - LOCKED_DIGIT_OFFSET
 #define TIME_WEDGE_MARGIN        5    // vertical clearance from glyph top/bottom to wedge edge
 
 // Four-band tonal architecture. Each band lands in a distinct Bayer-threshold

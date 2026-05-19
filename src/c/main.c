@@ -6,7 +6,7 @@
 //
 // Two physical layers separated by exactly one cut, with a visible actor.
 //
-//   Gnomon: a small black triangle on the lit dial. Its tip touches the wedge
+//   Gnomon: a small black triangle at the dial center. Its tip is the wedge
 //   apex; its base widens on the side facing the sun. Rotates with the hour.
 //   The wedge IS its shadow continuing outward — gnomon and wedge join at a
 //   single point and read as one continuous object.
@@ -22,49 +22,60 @@
 //   catches light at the cut's top corner, a darker wall sits just inside the
 //   lip, then the under-face opens beyond. Three pixel bands sell the cut.
 //
-//   Under face (inside the cut): a sparse near-black stipple is the surface,
-//   one Bayer band below the top-face floor. The digital HH:MM is a custom
-//   5×9 cinematic display face, NOT a seven-segment readout — real curves on
-//   0/6/8/9, a true double-loop 8, a real diagonal slash on 7. Glyphs are
-//   rotated to the wedge axis and shaded with directional rim/body/back.
-//   Non-glyph pixels ray-trace toward the gnomon; pixels hit by a glyph's
-//   shadow get a 4-pixel pure-black core plus a 6-pixel linear fade back to
-//   the under-face base.
+//   Under face (inside the cut): a fixed sundial dial stamped onto a sparse
+//   near-black stipple. Twelve hour numerals 1..12 sit axis-aligned at their
+//   clock-face positions; between them, twelve sub-ticks per hour interval
+//   (every 5 min on the hour scale, every third tick longer for quarter
+//   hours) ring an inner band. The dial does NOT rotate with the wedge — it
+//   is a stationary engraved plate, and the wedge is the cut that exposes
+//   whichever slice of it falls inside the shadow right now. Read the hour
+//   from whichever numeral the wedge centerline points at; read the minute
+//   by counting sub-ticks past the previous hour numeral.
+//
+//   The numerals use a 5×9 cinematic glyph set — real curves on 0/6/8/9, a
+//   true double-loop 8, a diagonal slash on 7 — drawn directly to the
+//   framebuffer with rim/body/back shading lit by the gnomon (the
+//   under-face's own light source). Non-ink pixels ray-trace toward the
+//   gnomon; pixels hit by a numeral's shadow get a 4-pixel pure-black core
+//   plus a 6-pixel linear fade back to the under-face base.
 //
 // Pixels are written directly to the framebuffer. Glyphs are drawn as bitmaps,
-// not via Pebble system fonts (system fonts cannot rotate with the wedge and
-// their antialiasing would betray the 1-bit medium).
+// not via Pebble system fonts (system fonts can't rotate to face the gnomon
+// and their antialiasing would betray the 1-bit medium).
 
 static Window *s_window;
 static Layer  *s_canvas_layer;
 static int     s_hour   = 12;
 static int     s_minute = 0;
 
-#define SHADOW_HALF_TAN_x1000  650   // wide reveal wedge, ~33° half-angle
+#define SHADOW_HALF_TAN_x1000  510   // wedge half-angle ~27° (full ~54°)
 #define LIGHT_OFFSCREEN_MARGIN  38   // keep the light source center off-screen
 #define LIGHT_FALLOFF_EXTRA     70
 #define GNOMON_BACK             12   // gnomon extends this far back from center
 #define GNOMON_BASE_HALF         4   // half-width at the base (lit side)
-// Locked geometry — the digit size and on-screen position are constant at
-// every hour. The auto-scale solver and dynamic camera pull are gone; their
-// jitter (scale 4 at diagonals, scale 2 at cardinal sides) was the source of
-// the "digits look different at different times" problem.
+
+// Dial geometry — the stamped under-face. Twelve hour numerals ring the
+// outside; twelve sub-ticks per hour interval (every 5 min on the hour
+// scale) ring an inner band with the every-third sub-tick lengthened as a
+// quarter-hour mark. All positions are fixed in screen coordinates: the
+// dial does not rotate, only the wedge does.
 //
-// Why scale 3: scale 4 cannot fit inside the wedge at cardinal angles on a
-// 144x168 screen, even at maximum camera pull. Scale 3 fits everywhere.
-//
-// Why this camera_pull / reveal_radius: with scale 3, the rotated HH:MM block
-// is 78px wide, so its near edge sits text_half_w = 39px from the digit
-// center. Reveal radius − 39 is the visible gap between the gnomon tip and
-// the digit's near edge. We size that gap at ~27px so the gnomon, wedge
-// apex, lip, and wall all read clearly before the digits begin: reveal 66,
-// digit center 22px ahead of screen_center, camera pull 44. Same at every
-// hour, fits on 144x168 at cardinal angles with margin.
-#define LOCKED_TIME_SCALE        3
-#define LOCKED_DIGIT_OFFSET     22    // digit center distance from screen_center along shadow axis
-#define LOCKED_REVEAL           66    // distance from dial center to digit center along shadow axis
-#define LOCKED_CAMERA_PULL      44    // = LOCKED_REVEAL - LOCKED_DIGIT_OFFSET
-#define TIME_WEDGE_MARGIN        5    // vertical clearance from glyph top/bottom to wedge edge
+// Earlier drafts placed a rotated digital HH:MM at a locked distance ahead
+// of the gnomon. That fixed the digit's *on-screen* size and position, but
+// the digits still moved with the wedge — the under-face read as a brush
+// dragging text, not as a plate beneath the cut. Removing the readout
+// turned the under-face into a stationary engraving the wedge exposes.
+#define HOUR_NUMERAL_SCALE       2    // 5x9 glyph at 2x = 10x18 px
+#define HOUR_NUMERAL_RING_MARGIN 10   // numeral ring radius = (min_dim/2) - this
+
+// Minute marker — a small axis-aligned 2-digit readout just past the
+// gnomon tip, near the start of the shadow cone. Orientation is locked
+// upright in screen space; only its position orbits the dial as the hour
+// advances. The hour numerals at the perimeter carry the stationary
+// "engraved plate" read; this is a quiet annotation at the cut's mouth so
+// the minute stays glanceable without rotating with the shadow.
+#define MINUTE_MARKER_SCALE      1    // 5x9 glyph at 1x — small annotation
+#define MINUTE_MARKER_RADIUS    32    // distance from gnomon along wedge axis
 
 // Four-band tonal architecture. Each band lands in a distinct Bayer-threshold
 // density so the eye reads each as a separate depth:
@@ -172,7 +183,7 @@ static void snap_step8(int32_t vx, int32_t vy, int *sx, int *sy) {
   }
 }
 
-static int under_time_intensity(const uint8_t *mask, int w, int h, int x, int y,
+static int under_ink_intensity(const uint8_t *mask, int w, int h, int x, int y,
                                 int lx, int ly, int under_x, int under_y) {
   // Rim-light the edge facing the underlayer light; darken the opposite edge.
   bool lit_edge = !mask_get(mask, w, h, x + lx, y + ly);
@@ -321,30 +332,41 @@ static void mask_draw_segment_text(uint8_t *mask, int w, int h, GPoint center,
   }
 }
 
-static void draw_under_time_mask(uint8_t *time_mask, int w, int h, GPoint center,
-                                 int32_t line_x, int32_t line_y,
-                                 const char *time_txt, int reveal_radius,
-                                 int time_scale) {
-  int32_t text_x = line_x;
-  int32_t text_y = line_y;
-  int32_t text_down_x = -line_y;
-  int32_t text_down_y = line_x;
-
-  if (text_x < 0) {
-    text_x = -text_x;
-    text_y = -text_y;
-    text_down_x = -text_down_x;
-    text_down_y = -text_down_y;
-  }
-
-  GPoint time_center = {
-    .x = center.x + (line_x * reveal_radius) / TRIG_MAX_RATIO,
-    .y = center.y + (line_y * reveal_radius) / TRIG_MAX_RATIO,
+static void mask_stamp_minute_marker(uint8_t *mask, int w, int h, GPoint center,
+                                     int32_t sin_h, int32_t cos_h,
+                                     int minute, int radius) {
+  GPoint p = {
+    .x = center.x + (sin_h * radius) / TRIG_MAX_RATIO,
+    .y = center.y - (cos_h * radius) / TRIG_MAX_RATIO,
   };
+  char buf[3];
+  snprintf(buf, sizeof(buf), "%02d", minute);
+  mask_draw_segment_text(mask, w, h, p, buf, MINUTE_MARKER_SCALE,
+                         TRIG_MAX_RATIO, 0, 0, TRIG_MAX_RATIO);
+}
 
-  mask_draw_segment_text(time_mask, w, h, time_center, time_txt,
-                         time_scale, text_x, text_y,
-                         text_down_x, text_down_y);
+static void mask_stamp_dial(uint8_t *mask, int w, int h, GPoint center,
+                            int hour_radius) {
+  // 12 hour numerals at clock-face positions, axis-aligned upright. The
+  // entire dial stays in screen-space: the wedge moves over it, not the
+  // other way around. The hours are the dial — nothing rings them, no
+  // ticks, no chrome. Bare engraved numerals on a near-black plate.
+  for (int hour = 1; hour <= 12; hour++) {
+    int hour_at_top = hour % 12;
+    int32_t angle   = (hour_at_top * TRIG_MAX_ANGLE) / 12;
+    int32_t sx      = sin_lookup(angle);
+    int32_t cx      = cos_lookup(angle);
+
+    GPoint p = {
+      .x = center.x + (sx * hour_radius) / TRIG_MAX_RATIO,
+      .y = center.y - (cx * hour_radius) / TRIG_MAX_RATIO,
+    };
+
+    char buf[3];
+    snprintf(buf, sizeof(buf), "%d", hour);
+    mask_draw_segment_text(mask, w, h, p, buf, HOUR_NUMERAL_SCALE,
+                           TRIG_MAX_RATIO, 0, 0, TRIG_MAX_RATIO);
+  }
 }
 
 static void canvas_update(Layer *layer, GContext *ctx) {
@@ -358,17 +380,10 @@ static void canvas_update(Layer *layer, GContext *ctx) {
   int32_t sin_h = sin_lookup(hour_angle);
   int32_t cos_h = cos_lookup(hour_angle);
 
-  // Locked geometry — same at every hour. See the header defines for why.
-  int time_scale    = LOCKED_TIME_SCALE;
-  int reveal_radius = LOCKED_REVEAL;
-  int camera_pull   = LOCKED_CAMERA_PULL;
-
-  // Treat the screen like a zoomed-in crop of a larger dial. Pulling the
-  // virtual center backward gives the reveal wedge more visible length.
-  GPoint center = {
-    .x = screen_center.x - (sin_h * camera_pull) / TRIG_MAX_RATIO,
-    .y = screen_center.y + (cos_h * camera_pull) / TRIG_MAX_RATIO,
-  };
+  // The dial is centered on the screen — the gnomon stands at its center,
+  // the wedge sweeps over the stationary plate. No camera pull: that trick
+  // made the dial drift opposite the wedge and defeated the stationary read.
+  GPoint center = screen_center;
 
   int half_diag = isqrt_approx(bounds.size.w * bounds.size.w +
                                bounds.size.h * bounds.size.h) / 2;
@@ -376,12 +391,12 @@ static void canvas_update(Layer *layer, GContext *ctx) {
   int32_t to_light_x = sin_lookup(sun_angle);
   int32_t to_light_y = -cos_lookup(sun_angle);
 
-  // Underlayer light emits from the gnomon (the wedge's origin) and shines
+  // Underlayer light emits from the gnomon (the dial's center) and shines
   // outward along the wedge. From any wedge pixel, the direction back toward
-  // that source is the same direction as the off-screen top-face sun lies in
-  // (both are on the gnomon side, opposite the hour). So tracing toward
-  // `to_light` finds digits between the pixel and the wedge's light source,
-  // and drop shadows fall outward toward the wedge tip.
+  // that source is the same direction as the off-screen top-face sun lies
+  // in (both are on the gnomon side, opposite the hour). Tracing toward
+  // `to_light` thus finds dial ink between the pixel and the wedge's own
+  // light source, and drop shadows fall outward toward the wedge tip.
   int under_light_step_x, under_light_step_y;
   snap_step8(to_light_x, to_light_y,
              &under_light_step_x, &under_light_step_y);
@@ -402,40 +417,39 @@ static void canvas_update(Layer *layer, GContext *ctx) {
   int day_amp = (DAY_BRIGHT_x256 - NIGHT_DIM_x256) / 2;
   int day_factor_x256 = day_avg + (day_amp * day_cos) / TRIG_MAX_RATIO;
 
-  // The display HH:MM string.
-  int display_hour = s_hour;
-  if (!clock_is_24h_style()) {
-    display_hour %= 12;
-    if (display_hour == 0) display_hour = 12;
-  }
-  char time_buf[6];
-  snprintf(time_buf, sizeof(time_buf), "%02d:%02d", display_hour, s_minute);
+  // Dial geometry — the engraved plate the wedge exposes. On rectangular
+  // screens the hour numerals sit close to the edge; on chalk's round
+  // screen they're pulled inward so the "10"/"11" corners don't get clipped
+  // by the disc.
+  int min_dim = bounds.size.w < bounds.size.h ? bounds.size.w : bounds.size.h;
+  int hour_radius = PBL_IF_ROUND_ELSE(74, (min_dim / 2) - HOUR_NUMERAL_RING_MARGIN);
 
-  // ── Build the rotated time mask, then rewrite every pixel ─────────────
-  // The initial framebuffer state doesn't matter; the per-pixel loop below
-  // writes every pixel inside the layer bounds.
+  // ── Build the dial mask, then rewrite every pixel ─────────────────────
+  // The dial is a function of geometry alone, not of the current time, so
+  // every minute tick redraws an identical mask. Cheap enough to rebuild.
   GBitmap *fb = graphics_capture_frame_buffer(ctx);
   if (!fb) return;
   GBitmapFormat fmt = gbitmap_get_format(fb);
 
   int mask_bytes = (bounds.size.w * bounds.size.h + 7) / 8;
-  uint8_t *time_mask = malloc(mask_bytes);
-  if (!time_mask) {
+  uint8_t *dial_mask = malloc(mask_bytes);
+  if (!dial_mask) {
     graphics_release_frame_buffer(ctx, fb);
     return;
   }
-  memset(time_mask, 0, mask_bytes);
+  memset(dial_mask, 0, mask_bytes);
 
-  draw_under_time_mask(time_mask, bounds.size.w, bounds.size.h,
-                       center, sin_h, -cos_h, time_buf, reveal_radius,
-                       time_scale);
+  mask_stamp_dial(dial_mask, bounds.size.w, bounds.size.h, center, hour_radius);
+
+  mask_stamp_minute_marker(dial_mask, bounds.size.w, bounds.size.h, center,
+                           sin_h, cos_h, s_minute, MINUTE_MARKER_RADIUS);
 
   for (int y = 0; y < bounds.size.h; y++) {
     GBitmapDataRowInfo row = gbitmap_get_data_row_info(fb, y);
     if (!row.data) continue;
     for (int x = row.min_x; x <= row.max_x; x++) {
 
-      bool is_time = mask_get(time_mask, bounds.size.w, bounds.size.h, x, y);
+      bool is_dial_ink = mask_get(dial_mask, bounds.size.w, bounds.size.h, x, y);
 
       int gx = x - center.x;
       int gy = y - center.y;
@@ -473,8 +487,8 @@ static void canvas_update(Layer *layer, GContext *ctx) {
         int base = UNDER_BASE_INTENSITY +
                    ((x * 7 + y * 3) & UNDER_BASE_NOISE);
 
-        if (is_time) {
-          intensity = under_time_intensity(time_mask, bounds.size.w,
+        if (is_dial_ink) {
+          intensity = under_ink_intensity(dial_mask, bounds.size.w,
                                            bounds.size.h, x, y,
                                            under_light_step_x,
                                            under_light_step_y,
@@ -486,7 +500,7 @@ static void canvas_update(Layer *layer, GContext *ctx) {
           // Dark wall just inside the lip — the cut's inner face.
           intensity = WEDGE_WALL_INTENSITY;
         } else {
-          int hit = wedge_drop_shadow_steps(time_mask, bounds.size.w,
+          int hit = wedge_drop_shadow_steps(dial_mask, bounds.size.w,
                                             bounds.size.h, x, y,
                                             under_light_step_x,
                                             under_light_step_y);
@@ -527,7 +541,7 @@ static void canvas_update(Layer *layer, GContext *ctx) {
       fb_set(row.data, x, fmt, white);
     }
   }
-  free(time_mask);
+  free(dial_mask);
   graphics_release_frame_buffer(ctx, fb);
 }
 

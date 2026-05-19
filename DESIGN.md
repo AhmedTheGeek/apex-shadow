@@ -1,27 +1,29 @@
 ---
 name: Apex Shadow
-description: A Pebble watchface where the shadow tells the hour and a hidden layer reveals the minutes.
+description: A Pebble watchface where the shadow sweeps an engraved sundial dial and a small minute mark rides the cut.
 colors:
   curtain-black: "#000000"
   stage-light: "#ffffff"
 typography:
-  display:
+  hour-numeral:
     fontFamily: "Apex Display, a custom 5x9 cinematic bitmap face (NOT seven-segment)"
-    fontSize: "36px"
-    fontWeight: 400
-    lineHeight: 1
-    letterSpacing: "4px"
+    scale: 2
+    pixelSize: "10x18 per digit"
+  minute-marker:
+    fontFamily: "Apex Display, 5x9 cinematic bitmap face"
+    scale: 1
+    pixelSize: "5x9 per digit"
 spacing:
   hair: "1px"
   lip: "1px"
   wall: "2px"
-  margin: "5px"
   gnomon-length: "12px"
   gnomon-base-half: "4px"
   shadow-core: "4px"
   shadow-reach: "10px"
-  camera-pull-near: "14px"
-  camera-pull-far: "34px"
+  hour-ring-margin: "10px (rect) / 16px (round)"
+  minute-marker-radius: "32px"
+  wedge-half-angle: "~27° (full ~54°)"
 components:
   light-face:
     backgroundColor: "{colors.stage-light}"
@@ -34,11 +36,14 @@ components:
     backgroundColor: "{colors.stage-light}"
   cut-wall:
     backgroundColor: "{colors.curtain-black}"
-  digital-time:
+  hour-numeral:
     backgroundColor: "{colors.curtain-black}"
     textColor: "{colors.stage-light}"
-    typography: "{typography.display}"
-    padding: "{spacing.margin}"
+    typography: "{typography.hour-numeral}"
+  minute-marker:
+    backgroundColor: "{colors.curtain-black}"
+    textColor: "{colors.stage-light}"
+    typography: "{typography.minute-marker}"
   drop-shadow:
     backgroundColor: "{colors.curtain-black}"
 ---
@@ -49,7 +54,7 @@ components:
 
 **Creative North Star: "The Stagelight Reveal"**
 
-The face is a stage. Light enters from off-screen, the gnomon is the actor, the shadow is the curtain. Minutes hide on a lower stage and are revealed only inside the cut the shadow makes through the top face. The reader is the audience: they watch a small mechanism do something, then they read what it has uncovered.
+The face is a stage. Light enters from off-screen, the gnomon is the actor, the shadow is the curtain. Beneath the top face an engraved sundial dial sits in fixed positions — twelve hour numerals around the rim — and the cut the shadow makes through the top face is what exposes them. The reader is the audience: they watch a small mechanism do something, then they read what it has uncovered.
 
 Density is near zero on purpose. No chrome, no ticks, no labels, no dashboards. The wearer reads time through staging, not through data. A two-second read is acceptable when it earns a moment of pleasure.
 
@@ -59,6 +64,8 @@ This system rejects three families by name: generic digital LCDs (Casio/G-Shock 
 - 1-bit honestly. Only black, only white, only 4x4 Bayer halftone in between.
 - Theatrical directional lighting from an off-screen source.
 - Two physical layers, separated by exactly one cut.
+- The under-face is a stationary engraved dial. The wedge moves; the dial does not.
+- A small axis-aligned minute mark rides the cut for precision. Orientation never rotates with the shadow.
 - No chrome, no labels, no decoration, no logos.
 - Per-minute redraws only. No sub-minute motion.
 
@@ -100,12 +107,15 @@ The palette is binary. The medium is 1-bit e-paper (or 1-bit-on-color rendered i
 The font extrudes by integer scale, so the only ways to grow a glyph are to double, triple, or quadruple every pixel. At runtime, an auto-scale solver tries 4x first and falls back to 3x or 2x whenever the wedge geometry would clip the larger size at the current hour.
 
 ### Hierarchy
-- **Display** (400 weight, 36px / scale 4x, lineHeight 1, letterSpacing 4px): the rotated `HH:MM` revealed inside the wedge. The only type on the face.
+- **Hour numeral** (scale 2x, 10x18 px per digit): twelve numerals stamped at the clock-face perimeter, axis-aligned upright. The primary read.
+- **Minute marker** (scale 1x, 5x9 px per digit): a small 2-digit annotation sitting along the wedge axis just past the gnomon, axis-aligned upright. Secondary read.
 
 ### Named Rules
-**The Native-Pixel Rule.** Type is drawn directly to the framebuffer as integer-scaled bitmaps. No Pebble system fonts (`FONT_KEY_BITHAM_42_BOLD`, `FONT_KEY_LECO_42_NUMBERS`, none of them). No TTF resources. No antialiasing. System fonts were tried in earlier iterations and rejected because they cannot rotate with the wedge and their antialiased grays betray the 1-bit medium.
+**The Native-Pixel Rule.** Type is drawn directly to the framebuffer as integer-scaled bitmaps. No Pebble system fonts (`FONT_KEY_BITHAM_42_BOLD`, `FONT_KEY_LECO_42_NUMBERS`, none of them). No TTF resources. No antialiasing. System fonts were tried in earlier iterations and rejected because they don't stamp pixel-cleanly into a rotating drop-shadow tracer and their antialiased grays betray the 1-bit medium.
 
-**The Rotates-With-The-Stage Rule.** The display type rotates so its baseline is parallel to the shadow wedge axis. The type is never axis-aligned to the watch bezel. If the wedge points to 4 o'clock, the digits read at 4-o'clock-tilt.
+**The Axis-Aligned-Always Rule.** All type on the face reads upright in screen space, never rotated to the wedge axis. An earlier draft rotated the `HH:MM` to follow the shadow; that defeated the stationary-dial read because the digits behaved like brush strokes the wedge dragged around. The dial is engraved; the minute marker is upright; nothing tilts.
+
+**The Two-Type-Sizes Rule.** Exactly two sizes are in use: scale 2 for the perimeter hour numerals (the dial's identity), scale 1 for the minute marker (a quiet refinement). Don't add a third.
 
 ## 4. Elevation
 
@@ -119,9 +129,9 @@ A four-band tonal architecture. Each band lands in a different Bayer dither dens
 - **Top Face — dim floor**: the gradient never collapses to pure black. A floor at intensity 56/255 (~3–5 lit pixels per 4x4) keeps the surface visibly lit even at the far rim, so the wedge below cannot be mistaken for "more gradient."
 - **Cut — lip**: a single-pixel band of high intensity (230/255, ~14–15 lit pixels per 4x4) just inside the wedge boundary. The cut's top corner catching light.
 - **Cut — wall**: a 2-pixel band of low intensity (4/255, 0–1 lit pixels) just inside the lip. The inner wall of the cut, in shadow.
-- **Cut (Shadow Wedge)**: a 66° wedge (~33° half-angle) originating at the gnomon, pointing toward the hour. Inside the cut, the top face is absent; only the under-face shows.
-- **Under-Face**: a sparse near-black stipple (intensity ~16–31/255, 1–2 lit pixels per 4x4 block). One Bayer band below the top-face floor.
-- **Drop Shadow**: a per-pixel ray traced 10 pixels back toward the gnomon (the under-face's own light source). The first four steps are pure black (0/255, no lit pixels). The next six steps fade linearly back to the under-face base, so the shadow reads as a solid void at the digit's heel feathering out as it leaves.
+- **Cut (Shadow Wedge)**: a ~54° wedge (~27° half-angle) originating at the gnomon, pointing toward the hour. Inside the cut, the top face is absent; only the under-face dial shows.
+- **Under-Face — engraved plate**: a sparse near-black stipple (intensity ~16–31/255, 1–2 lit pixels per 4x4 block) carrying the stamped hour numerals 1–12 at fixed clock positions. One Bayer band below the top-face floor.
+- **Drop Shadow**: a per-pixel ray traced 10 pixels back toward the gnomon (the under-face's own light source). The first four steps are pure black (0/255, no lit pixels). The next six steps fade linearly back to the under-face base, so the shadow reads as a solid void at the numeral's heel feathering out as it leaves.
 
 ### Named Rules
 **The One-Cut Rule.** There is exactly one cut. Do not add inset rims, double cuts, second wedges, faux drop shadows on the top face, or chrome around the wedge edge.

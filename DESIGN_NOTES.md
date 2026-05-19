@@ -60,7 +60,11 @@ The current rendering model includes:
 - independent bottom-layer lighting, so top-layer shadow/drop-shadow rules do not affect the revealed lower face.
 - a dynamic virtual camera, so the screen behaves like a cropped/zoomed view focused on the reveal instead of keeping the gnomon fixed in the exact center.
 - camera pull, lower-layer zoom, time placement, and time scale are recalculated from the current shadow direction so the hidden digital time remains visible at different times of day.
-- the reveal wedge background is now pitch black. The top-face light does not leak into the lower layer; only the lower-layer digital time renders inside the black cutout.
+- the reveal wedge background is a near-black sparse stipple (intensity ~16/255), one Bayer band darker than the top-face dim floor so the cutaway always reads as a deeper plane.
+- the top-face gradient is floored at intensity 56/255. Even at the far rim the lit surface keeps a visible dither density, so the wedge below cannot be mistaken for more of the same gradient.
+- a single bright pixel-line just inside the wedge boundary (intensity 210/255) acts as a cut-edge lip catching the light. This is the element that converts "darker wedge" into "removed slice."
+- inside the wedge, raised glyphs cast drop shadows back toward the gnomon (the under-face's light source). The shadow has a four-pixel pure-black core followed by a six-pixel linear fade to the under-face base, so the void reads sharp at the glyph heel and feathers as it leaves.
+- the four tonal bands (top-face lit, top-face floor, cut-edge lip, under-face base, drop-shadow void) each land in a distinct Bayer dither density. If any two collapsed into the same density the layer metaphor would dissolve.
 - lower-layer time scale now also checks the actual wedge width at the chosen reveal point, so the time shrinks when it would otherwise be sliced near the shadow tip.
 - the original raised gnomon rectangle was removed because the virtual-camera reveal made it read as a stray black line at the wedge origin.
 

@@ -4,29 +4,34 @@
 
 // Apex Shadow — a sundial-styled watchface.
 //
-// Two physical layers, separated by exactly one cut.
+// Two physical layers separated by exactly one cut, with a visible actor.
+//
+//   Gnomon: a small black triangle on the lit dial. Its tip touches the wedge
+//   apex; its base widens on the side facing the sun. Rotates with the hour.
+//   The wedge IS its shadow continuing outward — gnomon and wedge join at a
+//   single point and read as one continuous object.
 //
 //   Top face: a dithered radial gradient lit from an off-screen point source
-//   that orbits the dial opposite the current hour. Only black-and-white pixels
-//   land in the framebuffer; mid-tones come from 4×4 Bayer ordered dither. A
-//   minimum floor keeps even the gradient's dim end visibly lit, so the wedge
-//   reads as a deeper plane below it rather than as more of the same gradient.
+//   that orbits the dial opposite the current hour. The bright half is sharpened
+//   (linear → mildly squared) so the sun's direction has a visible bloom near
+//   the screen edge instead of a smooth, anonymous wash. A minimum floor keeps
+//   the dim end visibly lit so the wedge reads as a deeper plane below it.
 //
-//   Cut (shadow wedge): a 66° wedge originating at a virtual gnomon point and
-//   pointing toward the current hour. The mouth opens onto the screen because
-//   the virtual gnomon is pulled backward by a camera offset, so the wedge
-//   reads as a zoomed-in view of a larger imagined dial. A bright single-pixel
-//   lip just inside the wedge boundary catches the light at the cut edge.
+//   Cut (shadow wedge): a 66° wedge originating at the gnomon's tip, pointing
+//   toward the current hour. The wedge is carved, not painted: a bright lip
+//   catches light at the cut's top corner, a darker wall sits just inside the
+//   lip, then the under-face opens beyond. Three pixel bands sell the cut.
 //
 //   Under face (inside the cut): a sparse near-black stipple is the surface,
-//   one Bayer band below the top-face floor. The digital HH:MM is rasterized
-//   as a rotated 7-segment mask aligned with the wedge axis; each glyph pixel
-//   gets a directional rim/body/back shading. Non-glyph pixels ray-trace back
-//   toward the gnomon, and if a glyph blocks the under-face's light source
-//   they sit in its drop shadow: pure black for a four-pixel core, then a six-
-//   pixel linear fade back to the under-face base.
+//   one Bayer band below the top-face floor. The digital HH:MM is a custom
+//   5×9 cinematic display face, NOT a seven-segment readout — real curves on
+//   0/6/8/9, a true double-loop 8, a real diagonal slash on 7. Glyphs are
+//   rotated to the wedge axis and shaded with directional rim/body/back.
+//   Non-glyph pixels ray-trace toward the gnomon; pixels hit by a glyph's
+//   shadow get a 4-pixel pure-black core plus a 6-pixel linear fade back to
+//   the under-face base.
 //
-// Pixels are written directly to the framebuffer. Glyphs are drawn as bitmasks,
+// Pixels are written directly to the framebuffer. Glyphs are drawn as bitmaps,
 // not via Pebble system fonts (system fonts cannot rotate with the wedge and
 // their antialiasing would betray the 1-bit medium).
 
@@ -36,40 +41,59 @@ static int     s_hour   = 12;
 static int     s_minute = 0;
 
 #define SHADOW_HALF_TAN_x1000  650   // wide reveal wedge, ~33° half-angle
-#define WEDGE_NEAR_GAP           9   // pixels of dead-zone at the wedge origin
 #define LIGHT_OFFSCREEN_MARGIN  38   // keep the light source center off-screen
 #define LIGHT_FALLOFF_EXTRA     70
-#define CAMERA_PULL_MIN         14
-#define CAMERA_PULL_MAX         34
-#define CAMERA_REVEAL_MARGIN    18
-#define TIME_SCALE_NEAR          4
-#define TIME_SCALE_FAR           2
+#define GNOMON_BACK             12   // gnomon extends this far back from center
+#define GNOMON_BASE_HALF         4   // half-width at the base (lit side)
+// Locked geometry — the digit size and on-screen position are constant at
+// every hour. The auto-scale solver and dynamic camera pull are gone; their
+// jitter (scale 4 at diagonals, scale 2 at cardinal sides) was the source of
+// the "digits look different at different times" problem.
+//
+// Why scale 3: scale 4 cannot fit inside the wedge at cardinal angles on a
+// 144x168 screen, even at maximum camera pull. Scale 3 fits everywhere.
+//
+// Why this camera_pull / reveal_radius: with scale 3, the wedge needs to be
+// at least 52px from the dial center for the rotated glyph block to clear
+// the wedge edges (9*3+5 height / tan(33°) ≈ 49, plus 3px safety). We place
+// the digit center 20px ahead of screen center along the shadow axis (≈ the
+// midpoint of the visible wedge at cardinal angles), which fixes the
+// camera_pull at 52 − 20 = 32. Same at every hour.
+#define LOCKED_TIME_SCALE        3
+#define LOCKED_DIGIT_OFFSET     20    // digit center distance from screen_center along shadow axis
+#define LOCKED_REVEAL           52    // distance from dial center to digit center along shadow axis
+#define LOCKED_CAMERA_PULL      32    // = LOCKED_REVEAL - LOCKED_DIGIT_OFFSET
 #define TIME_WEDGE_MARGIN        5    // vertical clearance from glyph top/bottom to wedge edge
-#define TIME_WIDTH_PAD           8    // horizontal clearance from glyph end to wedge tip
-#define TIME_MIN_RADIUS_BUMP     3    // bump above the geometric minimum reveal radius
-#define REVEAL_RADIUS_FALLBACK  28    // used when no scale step fits the wedge
-#define REVEAL_RADIUS_MIN       38    // smallest reveal-screen-radius accepted
 
-// Three-band tonal architecture. The eye reads each band as a distinct depth
-// because each lands in a different Bayer-threshold band on the 4×4 matrix:
+// Four-band tonal architecture. Each band lands in a distinct Bayer-threshold
+// density so the eye reads each as a separate depth:
 //
 //   Top-face lit zone (outside wedge)
-//   ├── lit core:   80–255  →  5–16 white dots per 4×4   (lit surface)
-//   └── dim floor:  56–80   →  3–5 dots                  (still surface)
-//   Wedge cut
-//   ├── edge lip:   210     →  13 dots                   (light catching the cut)
-//   ├── under-face: 16–31   →  1–2 dots                  (the plane below)
-//   ├── shadow fade: 0→base →  0→1 dots                  (returning to plane)
-//   └── shadow core: 0      →  0 dots                    (the void itself)
+//   ├── bright bloom: amplified above linear, near the sun edge
+//   ├── lit core:    80–255 → 5–16 white dots per 4×4   (lit surface)
+//   └── dim floor:   56–80  → 3–5 dots                  (still surface)
+//   Gnomon
+//   └── silhouette:  0      → 0 dots                    (the actor)
+//   Wedge cut (carved, three pixel bands)
+//   ├── edge lip:    230    → 14–15 dots                (light catching the cut top)
+//   ├── cut wall:    4      → 0–1 dots                  (the wall just inside the lip)
+//   ├── under-face:  16–31  → 1–2 dots                  (the plane below)
+//   ├── shadow fade: 0→base → 0→1 dots                  (returning to plane)
+//   └── shadow core: 0      → 0 dots                    (the void at the digit's heel)
 #define TOP_FACE_FLOOR          56    // dim end of the gradient never dithers below this
+#define TOP_FACE_BLOOM_KNEE     100   // intensities above this get amplified
+#define TOP_FACE_BLOOM_NUM      3     // ratio for the amplification (3/2)
+#define TOP_FACE_BLOOM_DEN      2
 // Diurnal light. The off-screen sun's intensity varies through the 24-hour
 // cycle: brightest at noon (full), dimmest at midnight (half). Only the top
 // face dims; the wedge, lip, and shadows are unaffected, so the cut metaphor
 // holds at every hour while the mood quietly shifts from noir to harsh-noon.
 #define DAY_BRIGHT_x256        256    // peak top-face intensity multiplier at noon
 #define NIGHT_DIM_x256         128    // peak top-face intensity multiplier at midnight
-#define WEDGE_EDGE_GLOW        210    // bright lip just inside the wedge boundary
-#define WEDGE_EDGE_LIP           1    // thickness of the lip in pixels
+#define WEDGE_LIP_THICKNESS      1    // thickness of the bright cut-edge lip
+#define WEDGE_LIP_GLOW         230    // intensity of the bright lip
+#define WEDGE_WALL_THICKNESS     2    // thickness of the dark wall behind the lip
+#define WEDGE_WALL_INTENSITY     4    // wall is darker than the under-face base
 #define UNDER_BASE_INTENSITY    16    // wedge interior, the deepest readable surface
 #define UNDER_BASE_NOISE        15    // power-of-two-minus-one mask for stipple
 #define DROP_SHADOW_LENGTH      10    // total reach of a digit's shadow trail
@@ -112,25 +136,6 @@ static inline int clamp_int(int v, int min, int max) {
   if (v < min) return min;
   if (v > max) return max;
   return v;
-}
-
-static int ray_to_edge(GRect bounds, GPoint p, int32_t dir_x, int32_t dir_y) {
-  int best = 10000;
-  if (dir_x > 0) {
-    best = ((bounds.size.w - 1 - p.x) * TRIG_MAX_RATIO) / dir_x;
-  } else if (dir_x < 0) {
-    best = (p.x * TRIG_MAX_RATIO) / -dir_x;
-  }
-
-  if (dir_y > 0) {
-    int y_dist = ((bounds.size.h - 1 - p.y) * TRIG_MAX_RATIO) / dir_y;
-    if (y_dist < best) best = y_dist;
-  } else if (dir_y < 0) {
-    int y_dist = (p.y * TRIG_MAX_RATIO) / -dir_y;
-    if (y_dist < best) best = y_dist;
-  }
-
-  return best;
 }
 
 static inline bool mask_get(const uint8_t *mask, int w, int h, int x, int y) {
@@ -196,21 +201,33 @@ static int wedge_drop_shadow_steps(const uint8_t *mask, int w, int h,
   return 0;
 }
 
-static uint8_t seven_seg_mask(char c) {
-  switch (c) {
-    case '0': return 0x3F;
-    case '1': return 0x06;
-    case '2': return 0x5B;
-    case '3': return 0x4F;
-    case '4': return 0x66;
-    case '5': return 0x6D;
-    case '6': return 0x7D;
-    case '7': return 0x07;
-    case '8': return 0x7F;
-    case '9': return 0x6F;
-  }
-  return 0;
-}
+// Apex Display — a 5×9 cinematic glyph set. Geometric, slightly condensed,
+// hand-drawn at native resolution. Five-bit rows; bit 4 is the leftmost column.
+// Not segment-built: real curves on 0/6/8/9, a true double-loop 8 (the
+// "tell" that distinguishes this from a seven-segment readout), a real
+// diagonal on 7, a slim 1 with a flag, a triple-hook 3.
+static const uint8_t s_digit_rows[10][9] = {
+  // '0' — open ring
+  { 0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E },
+  // '1' — slim with a flag
+  { 0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E },
+  // '2'
+  { 0x0E, 0x11, 0x01, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F },
+  // '3' — three hooks on a right spine
+  { 0x0F, 0x01, 0x01, 0x01, 0x07, 0x01, 0x01, 0x01, 0x0F },
+  // '4' — decisive double stem
+  { 0x11, 0x11, 0x11, 0x11, 0x1F, 0x01, 0x01, 0x01, 0x01 },
+  // '5'
+  { 0x1F, 0x10, 0x10, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E },
+  // '6' — top hook, full bottom loop
+  { 0x0E, 0x10, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x11, 0x0E },
+  // '7' — single sharp diagonal slash
+  { 0x1F, 0x01, 0x02, 0x02, 0x04, 0x04, 0x08, 0x08, 0x10 },
+  // '8' — true double loop (NOT lit-segments)
+  { 0x0E, 0x11, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x11, 0x0E },
+  // '9' — mirror of 6, hooked tail
+  { 0x0E, 0x11, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x11, 0x0E },
+};
 
 static int glyph_width(char c, int scale) {
   if (c == ':') return 2 * scale;
@@ -252,19 +269,19 @@ static void mask_draw_digit(uint8_t *mask, int w, int h, GPoint origin,
                             int32_t x_axis_x, int32_t x_axis_y,
                             int32_t y_axis_x, int32_t y_axis_y,
                             char c, int scale, int x_offset) {
-  uint8_t seg = seven_seg_mask(c);
-  int gw = 5 * scale;
-  int gh = 9 * scale;
-  int t = scale;
-  int mid = gh / 2;
-
-  if (seg & 0x01) mask_draw_axis_rect(mask, w, h, origin, x_axis_x, x_axis_y, y_axis_x, y_axis_y, x_offset + t, 0, gw - 2 * t, t);
-  if (seg & 0x02) mask_draw_axis_rect(mask, w, h, origin, x_axis_x, x_axis_y, y_axis_x, y_axis_y, x_offset + gw - t, t, t, mid - t);
-  if (seg & 0x04) mask_draw_axis_rect(mask, w, h, origin, x_axis_x, x_axis_y, y_axis_x, y_axis_y, x_offset + gw - t, mid, t, gh - mid - t);
-  if (seg & 0x08) mask_draw_axis_rect(mask, w, h, origin, x_axis_x, x_axis_y, y_axis_x, y_axis_y, x_offset + t, gh - t, gw - 2 * t, t);
-  if (seg & 0x10) mask_draw_axis_rect(mask, w, h, origin, x_axis_x, x_axis_y, y_axis_x, y_axis_y, x_offset, mid, t, gh - mid - t);
-  if (seg & 0x20) mask_draw_axis_rect(mask, w, h, origin, x_axis_x, x_axis_y, y_axis_x, y_axis_y, x_offset, t, t, mid - t);
-  if (seg & 0x40) mask_draw_axis_rect(mask, w, h, origin, x_axis_x, x_axis_y, y_axis_x, y_axis_y, x_offset + t, mid - t / 2, gw - 2 * t, t);
+  if (c < '0' || c > '9') return;
+  const uint8_t *rows = s_digit_rows[c - '0'];
+  for (int row = 0; row < 9; row++) {
+    uint8_t bits = rows[row];
+    for (int col = 0; col < 5; col++) {
+      if (bits & (1 << (4 - col))) {
+        mask_draw_axis_rect(mask, w, h, origin, x_axis_x, x_axis_y,
+                            y_axis_x, y_axis_y,
+                            x_offset + col * scale, row * scale,
+                            scale, scale);
+      }
+    }
+  }
 }
 
 static void mask_draw_colon(uint8_t *mask, int w, int h, GPoint origin,
@@ -340,14 +357,10 @@ static void canvas_update(Layer *layer, GContext *ctx) {
   int32_t sin_h = sin_lookup(hour_angle);
   int32_t cos_h = cos_lookup(hour_angle);
 
-  int forward_space = ray_to_edge(bounds, screen_center, sin_h, -cos_h);
-  int backward_space = ray_to_edge(bounds, screen_center, -sin_h, cos_h);
-  int camera_pull = clamp_int(backward_space / 3, CAMERA_PULL_MIN,
-                              CAMERA_PULL_MAX);
-  int reveal_screen_radius = (forward_space * 2) / 3;
-  reveal_screen_radius = clamp_int(reveal_screen_radius, REVEAL_RADIUS_MIN,
-                                   forward_space - CAMERA_REVEAL_MARGIN);
-  int reveal_radius = reveal_screen_radius + camera_pull;
+  // Locked geometry — same at every hour. See the header defines for why.
+  int time_scale    = LOCKED_TIME_SCALE;
+  int reveal_radius = LOCKED_REVEAL;
+  int camera_pull   = LOCKED_CAMERA_PULL;
 
   // Treat the screen like a zoomed-in crop of a larger dial. Pulling the
   // virtual center backward gives the reveal wedge more visible length.
@@ -388,7 +401,7 @@ static void canvas_update(Layer *layer, GContext *ctx) {
   int day_amp = (DAY_BRIGHT_x256 - NIGHT_DIM_x256) / 2;
   int day_factor_x256 = day_avg + (day_amp * day_cos) / TRIG_MAX_RATIO;
 
-  // The display HH:MM string. Built first so the layout solver can fit it.
+  // The display HH:MM string.
   int display_hour = s_hour;
   if (!clock_is_24h_style()) {
     display_hour %= 12;
@@ -396,26 +409,6 @@ static void canvas_update(Layer *layer, GContext *ctx) {
   }
   char time_buf[6];
   snprintf(time_buf, sizeof(time_buf), "%02d:%02d", display_hour, s_minute);
-
-  // Auto-scale the rotated time mask so it always fits inside the wedge.
-  int available_forward = ray_to_edge(bounds, center, sin_h, -cos_h);
-  int time_scale = TIME_SCALE_FAR;
-  int fitted_reveal_radius = REVEAL_RADIUS_FALLBACK;
-  for (int scale = TIME_SCALE_NEAR; scale >= TIME_SCALE_FAR; scale--) {
-    int time_half_w = text_width(time_buf, scale) / 2 + TIME_WIDTH_PAD;
-    int time_half_h = 9 * scale + TIME_WEDGE_MARGIN;
-    int max_reveal_radius = available_forward - time_half_w;
-    int min_reveal_radius =
-        (time_half_h * 1000) / SHADOW_HALF_TAN_x1000 + TIME_MIN_RADIUS_BUMP;
-
-    if (max_reveal_radius < min_reveal_radius) continue;
-
-    time_scale = scale;
-    fitted_reveal_radius = clamp_int(reveal_radius, min_reveal_radius,
-                                     max_reveal_radius);
-    break;
-  }
-  reveal_radius = fitted_reveal_radius;
 
   // ── Build the rotated time mask, then rewrite every pixel ─────────────
   // The initial framebuffer state doesn't matter; the per-pixel loop below
@@ -452,16 +445,26 @@ static void canvas_update(Layer *layer, GContext *ctx) {
       if (intensity < 0)   intensity = 0;
       if (intensity > 255) intensity = 255;
 
-      // Is this pixel inside the shadow wedge?
+      // Wedge / gnomon classification. The two share the same shadow axis:
+      // gnomon lives at proj_along < 0 (lit side), wedge at proj_along >= 0.
+      // Both taper to a single pixel at proj_along = 0, so they read as one
+      // continuous shape: solid triangle joining its own cast shadow.
       int proj_along = (gx * sin_h - gy * cos_h) / TRIG_MAX_RATIO;
       int proj_perp  = (gx * cos_h + gy * sin_h) / TRIG_MAX_RATIO;
       int abs_perp   = proj_perp < 0 ? -proj_perp : proj_perp;
 
       int max_perp  = 0;
       bool in_wedge = false;
-      if (proj_along > WEDGE_NEAR_GAP - 1) {
+      if (proj_along >= 0) {
         max_perp = (proj_along * SHADOW_HALF_TAN_x1000) / 1000 + 1;
         if (abs_perp <= max_perp) in_wedge = true;
+      }
+
+      bool in_gnomon = false;
+      if (!in_wedge && proj_along < 0 && proj_along > -GNOMON_BACK - 1) {
+        int from_tip = -proj_along;  // 1 at tip, GNOMON_BACK at base
+        int half_w = ((from_tip - 1) * GNOMON_BASE_HALF) / (GNOMON_BACK - 1);
+        if (abs_perp <= half_w) in_gnomon = true;
       }
 
       if (in_wedge) {
@@ -475,9 +478,12 @@ static void canvas_update(Layer *layer, GContext *ctx) {
                                            under_light_step_x,
                                            under_light_step_y,
                                            x, y);
-        } else if (edge_dist <= WEDGE_EDGE_LIP) {
-          // Bright lip catching light along the upper-face's cut edge.
-          intensity = WEDGE_EDGE_GLOW;
+        } else if (edge_dist < WEDGE_LIP_THICKNESS) {
+          // Bright lip catching light along the cut's top corner.
+          intensity = WEDGE_LIP_GLOW;
+        } else if (edge_dist < WEDGE_LIP_THICKNESS + WEDGE_WALL_THICKNESS) {
+          // Dark wall just inside the lip — the cut's inner face.
+          intensity = WEDGE_WALL_INTENSITY;
         } else {
           int hit = wedge_drop_shadow_steps(time_mask, bounds.size.w,
                                             bounds.size.h, x, y,
@@ -495,13 +501,24 @@ static void canvas_update(Layer *layer, GContext *ctx) {
             intensity = base;
           }
         }
+      } else if (in_gnomon) {
+        // Solid silhouette — the visible actor casting the wedge as its
+        // shadow. Slightly darker than the under-face base so the gnomon
+        // reads as a real object on the lit dial, not a continuation of
+        // the cut.
+        intensity = 0;
       } else {
-        // Top-face dim floor — the lit surface never collapses to pure black,
-        // so the wedge interior reads as a deeper plane below it. The diurnal
-        // factor dims the gradient amplitude before the floor clamps it, so at
-        // night most of the surface settles at the floor and the gradient is
-        // narrow and moody; at noon it spans the full range.
+        // Top face. Diurnal dim, then a mild knee-bloom on the bright half
+        // so the off-screen sun has a locatable bloom near the screen edge
+        // instead of a smooth anonymous wash. Floor keeps the dim end lit
+        // so the wedge below reads as a deeper plane.
         intensity = (intensity * day_factor_x256) / 256;
+        if (intensity > TOP_FACE_BLOOM_KNEE) {
+          intensity = TOP_FACE_BLOOM_KNEE +
+              ((intensity - TOP_FACE_BLOOM_KNEE) * TOP_FACE_BLOOM_NUM) /
+              TOP_FACE_BLOOM_DEN;
+          if (intensity > 255) intensity = 255;
+        }
         if (intensity < TOP_FACE_FLOOR) intensity = TOP_FACE_FLOOR;
       }
 
@@ -511,10 +528,6 @@ static void canvas_update(Layer *layer, GContext *ctx) {
   }
   free(time_mask);
   graphics_release_frame_buffer(ctx, fb);
-
-  // The old raised gnomon is intentionally not drawn. The reveal wedge itself
-  // now carries the sundial/shadow role, and a fixed vertical cap looked like
-  // an artifact once the virtual camera started moving.
 }
 
 static void tick_handler(struct tm *time, TimeUnits changed) {

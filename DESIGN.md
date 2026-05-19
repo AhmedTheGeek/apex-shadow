@@ -6,16 +6,18 @@ colors:
   stage-light: "#ffffff"
 typography:
   display:
-    fontFamily: "Apex Segment, a custom 5x9 pseudo-seven-segment bitmap"
+    fontFamily: "Apex Display, a custom 5x9 cinematic bitmap face (NOT seven-segment)"
     fontSize: "36px"
     fontWeight: 400
     lineHeight: 1
     letterSpacing: "4px"
 spacing:
   hair: "1px"
-  edge-lip: "1px"
+  lip: "1px"
+  wall: "2px"
   margin: "5px"
-  wedge-near-gap: "9px"
+  gnomon-length: "12px"
+  gnomon-base-half: "4px"
   shadow-core: "4px"
   shadow-reach: "10px"
   camera-pull-near: "14px"
@@ -24,10 +26,14 @@ components:
   light-face:
     backgroundColor: "{colors.stage-light}"
     textColor: "{colors.curtain-black}"
+  gnomon:
+    backgroundColor: "{colors.curtain-black}"
   shadow-wedge:
     backgroundColor: "{colors.curtain-black}"
-  cut-edge:
+  cut-lip:
     backgroundColor: "{colors.stage-light}"
+  cut-wall:
+    backgroundColor: "{colors.curtain-black}"
   digital-time:
     backgroundColor: "{colors.curtain-black}"
     textColor: "{colors.stage-light}"
@@ -75,9 +81,23 @@ The palette is binary. The medium is 1-bit e-paper (or 1-bit-on-color rendered i
 
 ## 3. Typography
 
-**Display Font:** Apex Segment, a custom 5x9 pseudo-seven-segment glyph set drawn directly into the Pebble framebuffer as a pixel mask.
+**Display Font:** Apex Display, a custom 5x9 cinematic glyph set drawn directly into the Pebble framebuffer as a pixel mask. **Not** a seven-segment readout — that's PRODUCT.md's first anti-reference.
 
-**Character:** Hand-drawn at native resolution. Hard edges. No subpixel rendering, no antialiasing. The font extrudes by integer scale, so the only ways to grow a glyph are to double, triple, or quadruple every pixel. At runtime, an auto-scale solver tries 4x first and falls back to 3x or 2x whenever the wedge geometry would clip the larger size at the current hour.
+**Character:** Hand-drawn at native resolution. Hard edges. No subpixel rendering, no antialiasing. Geometric, slightly condensed, with intentional character in every glyph:
+
+- **0** — open ring; the body is one continuous loop, not a "lit segments minus the middle bar."
+- **1** — slim single column with a small flag at the top. Asymmetric, not a tall rectangle.
+- **2** — top arc, then a real diagonal cutting down to a full base bar.
+- **3** — three rightward hooks on a vertical spine. Distinctive silhouette; reads as 3 at a glance.
+- **4** — two full vertical stems crossed by a horizontal bar; the left stem stops at the bar, the right continues down.
+- **5** — square top, open middle, full bottom bowl.
+- **6** — a top hook curving into a full closed bottom loop.
+- **7** — a single sharp diagonal slash from the top-right corner to the bottom-left.
+- **8** — a **true double loop** with two complete enclosed rings. This is the "tell" that proves the type is not segment-built: a 7-segment 8 has all seven segments lit; this 8 has two real holes.
+- **9** — mirror of 6: full closed top loop, hooked tail descending.
+- **:** — two stacked dots, one cell square each.
+
+The font extrudes by integer scale, so the only ways to grow a glyph are to double, triple, or quadruple every pixel. At runtime, an auto-scale solver tries 4x first and falls back to 3x or 2x whenever the wedge geometry would clip the larger size at the current hour.
 
 ### Hierarchy
 - **Display** (400 weight, 36px / scale 4x, lineHeight 1, letterSpacing 4px): the rotated `HH:MM` revealed inside the wedge. The only type on the face.
@@ -97,7 +117,8 @@ A four-band tonal architecture. Each band lands in a different Bayer dither dens
 
 - **Top Face — lit core**: dithered radial gradient lit from an off-screen point source opposite the hour. Bright nearest the sun, fading toward the far rim. The gradient's *amplitude* varies through the 24-hour cycle (see Diurnal Light below): full range at noon, compressed at midnight.
 - **Top Face — dim floor**: the gradient never collapses to pure black. A floor at intensity 56/255 (~3–5 lit pixels per 4x4) keeps the surface visibly lit even at the far rim, so the wedge below cannot be mistaken for "more gradient."
-- **Cut Edge — lip**: a single-pixel band of high intensity (210/255, ~13 lit pixels per 4x4) just inside the wedge boundary. Reads as light catching the upper face's cut edge.
+- **Cut — lip**: a single-pixel band of high intensity (230/255, ~14–15 lit pixels per 4x4) just inside the wedge boundary. The cut's top corner catching light.
+- **Cut — wall**: a 2-pixel band of low intensity (4/255, 0–1 lit pixels) just inside the lip. The inner wall of the cut, in shadow.
 - **Cut (Shadow Wedge)**: a 66° wedge (~33° half-angle) originating at the gnomon, pointing toward the hour. Inside the cut, the top face is absent; only the under-face shows.
 - **Under-Face**: a sparse near-black stipple (intensity ~16–31/255, 1–2 lit pixels per 4x4 block). One Bayer band below the top-face floor.
 - **Drop Shadow**: a per-pixel ray traced 10 pixels back toward the gnomon (the under-face's own light source). The first four steps are pure black (0/255, no lit pixels). The next six steps fade linearly back to the under-face base, so the shadow reads as a solid void at the digit's heel feathering out as it leaves.
@@ -121,22 +142,17 @@ This is a watchface, not a UI. The "components" are visual primitives drawn dire
 - **Falloff:** linear from full Stage Light at the sun toward the far rim, floored at intensity 56/255 so the surface never collapses to pure black.
 - **Render:** intensity per pixel → Bayer-thresholded → one bit per pixel in the framebuffer.
 
-### The Cut Edge
-- **Geometry:** a one-pixel band on the inside of the wedge boundary, where `max_perp − abs_perp ≤ 1`.
-- **Intensity:** 210/255, dithered. Sits well above both the top-face floor and the under-face base, so the cut is unambiguously delineated from both sides.
-- **Read:** light catching the upper face's cut edge. The element that sells the metaphor: this is not a darker patch, this is a removed slice.
-
 ### The Shadow Wedge
-- **Geometry:** triangle, 66° apex (33° half-angle), origin at the gnomon, length unbounded (clipped by the screen rect).
+- **Geometry:** triangle, 66° apex (33° half-angle), origin at the gnomon tip, length unbounded (clipped by the screen rect). Wedge apex and gnomon tip coincide at a single pixel.
 - **Direction:** the hour angle, including the minute fraction (`(hour*60 + minute) / (12*60) × 360°`). Sweeps smoothly with the minute, not in discrete hourly jumps.
-- **Camera pull:** the virtual gnomon position is shifted backward along the shadow axis by 14–34px (zoom-dependent), so the wedge mouth opens further onto the screen. The effect is a cropped, zoomed view of a larger imagined dial.
-- **Fill:** none. The wedge area is what shows through to the under-face.
+- **Camera pull:** the virtual dial center is shifted backward along the shadow axis by a locked 32px, so the wedge mouth opens further onto the screen. The effect is a cropped, zoomed view of a larger imagined dial. The pull does not vary with angle — locking it is what makes the digit's on-screen position consistent at every hour.
+- **Fill:** none. The wedge area is what shows through to the under-face, framed by the lip and wall.
 
 ### The Digital Time
-- **Type:** Apex Segment at scale 4x rendering `HH:MM` (or `H:MM` per 12/24-hour preference).
-- **Rotation:** baseline parallel to the wedge axis.
-- **Placement:** along the wedge axis at a `reveal_radius` chosen by the layout solver so the rotated glyph block fits fully inside the wedge interior at the current angle.
-- **Auto-scale:** the solver tries scale 4x first; falls back to 3x or 2x if the glyph block would clip against the wedge edges at the current geometry.
+- **Type:** Apex Display at locked scale 3x rendering `HH:MM` (or `H:MM` per 12/24-hour preference).
+- **Rotation:** baseline parallel to the wedge axis. If the wedge points to 4 o'clock, the digits read at 4-o'clock-tilt.
+- **Locked scale:** scale 3x is the largest that fits inside the wedge at every hour, across every Pebble platform. The scale never varies with angle — the digits read at the same on-screen pixel size at 12:00, 3:00, 7:35, and every angle in between. Scale 4x cannot fit at cardinal angles on the 144×168 screens even at maximum camera pull, so it is never reached.
+- **Locked position:** the digit center sits 20px from the screen center along the shadow axis at every hour — approximately the midpoint of the visible wedge. Combined with a fixed 32px camera pull, this places the digit at the same on-screen offset regardless of where the wedge points. No jitter.
 - **Body:** mid-stipple, intensity 150 with stipple noise.
 - **Rim:** intensity 255 on the edge facing the under-face light (toward the gnomon).
 - **Trailing edge:** intensity ~78 with stipple noise.
@@ -149,7 +165,16 @@ This is a watchface, not a UI. The "components" are visual primitives drawn dire
 - **Fade:** hits 5–10 fade linearly from black back to the under-face base (`intensity = base × (hit−4) / 6`). The shadow returns gradually to the plane rather than ending sharply.
 
 ### The Gnomon
-- Removed from the current build. A small vertical black bar at the dial center was the original anchor of the shadow; the virtual-camera reveal made it read as a stray vertical line at the wedge mouth. The wedge itself now carries the gnomon's role implicitly.
+- **Geometry:** a small directional triangle on the lit dial. Base 9px wide on the side facing the sun, narrowing to a 1px tip that touches the wedge apex. Length along the shadow axis: 12px.
+- **Direction:** rotates with the hour. Always lies opposite the wedge, between the dial center and the off-screen sun.
+- **Fill:** pure black (intensity 0). No internal shading; the silhouette against the lit top-face dither carries the read.
+- **Role:** the visible actor on the stage. The wedge IS its shadow — gnomon tip and wedge apex meet at a single pixel, so the two read as one continuous shape: solid triangle joining its own cast shadow.
+- **History:** an earlier draft used a fixed vertical bar at the dial center. That was wrong: it didn't rotate with the wedge, so at most hours it read as a stray line. The directional triangle replaces it. The cut metaphor demands a visible cause.
+
+### The Cut Edge
+- **Lip:** a 1-pixel band just inside the wedge boundary at intensity 230. Bright. Reads as light catching the top corner of the cut.
+- **Wall:** a 2-pixel band just inside the lip at intensity 4. Darker than the under-face base. Reads as the inner wall of the cut, in shadow because it faces downward.
+- **Read:** three pixel bands — bright lip, dark wall, then the under-face stipple — sell the cut as a carved slice rather than a painted-on dark region.
 
 ## 6. Do's and Don'ts
 

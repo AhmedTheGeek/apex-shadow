@@ -65,8 +65,17 @@ The current rendering model includes:
 - a single bright pixel-line just inside the wedge boundary (intensity 210/255) acts as a cut-edge lip catching the light. This is the element that converts "darker wedge" into "removed slice."
 - inside the wedge, raised glyphs cast drop shadows back toward the gnomon (the under-face's light source). The shadow has a four-pixel pure-black core followed by a six-pixel linear fade to the under-face base, so the void reads sharp at the glyph heel and feathers as it leaves.
 - the four tonal bands (top-face lit, top-face floor, cut-edge lip, under-face base, drop-shadow void) each land in a distinct Bayer dither density. If any two collapsed into the same density the layer metaphor would dissolve.
-- lower-layer time scale now also checks the actual wedge width at the chosen reveal point, so the time shrinks when it would otherwise be sliced near the shadow tip.
-- the original raised gnomon rectangle was removed because the virtual-camera reveal made it read as a stray black line at the wedge origin.
+
+## Redesign Pass (May 2026)
+
+The mid-build watchface was technically working but visually dull. Four moves rewrote the execution while preserving the staging idea:
+
+1. **Cinematic display type** replacing the pseudo-7-segment glyphs. The old set was the exact anti-reference PRODUCT.md rejects (Casio/G-Shock LCD). The new Apex Display is a 5x9 bitmap face with real curves on 0/6/8/9, a true double-loop 8 (the "tell" that distinguishes it from segment-built), a sharp diagonal 7, a slim 1 with a flag, and a triple-hook 3.
+2. **Gnomon restored as a directional triangle.** Replaces the old fixed vertical bar (which read as a stray line because it didn't rotate). The new gnomon's tip touches the wedge apex; its base widens on the side facing the sun. Rotates with the hour. The wedge becomes its visible shadow — two triangles joined at a single pixel, one solid, one cut.
+3. **Carved cut edge: lip + wall + base.** The single-pixel bright lip is now followed by a 2-pixel dark wall (intensity 4, *below* the under-face base) before the under-face stipple opens up. The cut reads as chiseled, not painted.
+4. **Top-face bloom.** The lit half of the gradient is amplified above intensity 100 (3/2 ratio) so the off-screen sun has a locatable bloom near the screen edge. The dim half stays floored at 56.
+
+The auto-scale solver was also removed. Digit scale, camera pull, and reveal radius are now locked constants (3, 32px, 52px respectively), so the digit reads at the same on-screen size and same on-screen position at every hour. The old solver picked scale 4 at diagonals and scale 2 at cardinal sides, which was visually inconsistent.
 
 ## Current Files
 
